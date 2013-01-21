@@ -1,0 +1,18 @@
+%%-*- mode: erlang -*-
+{application, erlmedlib,
+ [
+  {description, "erlmedlib"},
+  {vsn, "1"},
+  {modules, []},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib,
+                  inets,
+                  crypto,
+                  mochiweb,
+                  webmachine
+                 ]},
+  {mod, { erlmedlib_app, []}},
+  {env, []}
+ ]}.
