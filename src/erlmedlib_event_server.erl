@@ -50,24 +50,23 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal Function Definitions
 %% ------------------------------------------------------------------
 
-do_process_event({Path, file, create, Cookie, Name}, State) ->
+%% do_process_event({Path, file, create, Cookie, Name}, State) ->
 %% run through exiftool
 %% Send produced data to couchdb
-    State;
+%%    State;
 do_process_event({Path, file, delete, Cookie, Name}, State) ->
 %% Find on couchdb using path and Name
 %% Delete from couchdb
     State;
 %% A file or directory was moved into a watched directory. This event occurs even if the file is simply moved from and to the same directory.
 do_process_event({Path, file, move_to, Cookie, Name}, State) ->
-%% Treat like a create
+%% Treat like a close_write
     State;
 %% A file or directory was moved from a watched directory. This event occurs even if the file is simply moved from and to the same directory.
 do_process_event({Path, file, move_from, Cookie, Name}, State) ->
 %% Treat like a delete
     State;
-
-do_process_event({Path, file, modify, Cookie, Name}, State) ->
+do_process_event({Path, file, close_write, Cookie, Name}, State) ->
 %% run through exiftool
 %% Find on couchdb using path and Name
 %% update couchdb
