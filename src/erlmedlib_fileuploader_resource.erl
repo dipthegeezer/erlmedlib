@@ -4,30 +4,26 @@
 %% @copyright 2008-2009 Basho Technologies, Inc.
 
 -module(erlmedlib_fileuploader_resource).
--include_lib("webmachine/include/webmachine.hrl").
 
 -export([init/1,
          allowed_methods/2,
          process_post/2]).
+
+-include_lib("webmachine/include/webmachine.hrl").
 
 init([]) -> {ok, undefined}.
 
 allowed_methods(ReqData, Context) ->{['POST'], ReqData, Context}.
 
 process_post(ReqData, State) ->
-    Body = get_streamed_body(wrq:stream_req_body(ReqData, 3), []),
-    {true, wrq:set_resp_body({stream, send_streamed_body(Body,4)},ReqData), State}.
+    %%Body = get_streamed_body(wrq:stream_req_body(ReqData, 100), []),
+    Boundary = webmachine_multipart:find_boundary(ReqData),
+    io:format("Boundary ~p~n",[ReqData]),
+    {Part, Next} = webmachine_multipart:stream_parts(wrq:stream_req_body(ReqData, 100), Boundary),
 
-send_streamed_body(Body, Max) ->
-    HunkLen=8*Max,
-    case Body of
-        <<Hunk:HunkLen/bitstring, Rest/binary>> ->
-            io:format("SENT ~p~n",[Hunk]),
-            {Hunk, fun() -> send_streamed_body(Rest,Max) end};
-        _ ->
-            io:format("SENT ~p~n",[Body]),
-            {Body, done}
-    end.
+    io:format("Part ~p~n",[Part]),
+    NewReqData = wrq:set_resp_header("Content-type", "text/plain", wrq:set_resp_body(json_body([{success, "true"}]), ReqData)),
+    {true, NewReqData, State}.
 
 get_streamed_body({Hunk,done},Acc) ->
     io:format("RECEIVED ~p~n",[Hunk]),
@@ -36,5 +32,4 @@ get_streamed_body({Hunk,Next},Acc) ->
     io:format("RECEIVED ~p~n",[Hunk]),
     get_streamed_body(Next(),[Hunk|Acc]).
 
-
-
+json_body(QS) -> mochijson:encode({struct, QS}).
