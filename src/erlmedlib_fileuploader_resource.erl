@@ -16,12 +16,13 @@ init([]) -> {ok, undefined}.
 allowed_methods(ReqData, Context) ->{['POST'], ReqData, Context}.
 
 process_post(ReqData, State) ->
-    %%Body = get_streamed_body(wrq:stream_req_body(ReqData, 100), []),
     Boundary = webmachine_multipart:find_boundary(ReqData),
-    io:format("Boundary ~p~n",[ReqData]),
-    {Part, Next} = webmachine_multipart:stream_parts(wrq:stream_req_body(ReqData, 100), Boundary),
-
-    io:format("Part ~p~n",[Part]),
+    Parts = webmachine_multipart:getparts1(
+              webmachine_multipart:stream_parts(
+                wrq:stream_req_body(ReqData, 1024),Boundary
+              ), []
+            ).
+    io:format("Parts ~p~n",[Parts]),
     NewReqData = wrq:set_resp_header("Content-type", "text/plain", wrq:set_resp_body(json_body([{success, "true"}]), ReqData)),
     {true, NewReqData, State}.
 
