@@ -9,6 +9,8 @@
 
 -record(context, {outdir}).
 
+%%TODO:Docs, tests, check delete works, debug mode to log file.
+
 init([OutputDir]) -> {ok, #context{outdir=OutputDir}}.
 
 allowed_methods(ReqData, Context) ->{['POST', 'DELETE'], ReqData, Context}.
@@ -27,7 +29,7 @@ delete_resource(ReqData, Context) ->
 process_post(ReqData, Context) ->
     try
         Boundary = webmachine_multipart:find_boundary(ReqData),
-        io:format("Boundary ~p~n",[Boundary]),
+        %%io:format("Boundary ~p~n",[Boundary]),
         Parts = accumulate_stream_parts(webmachine_multipart:stream_parts(
                 wrq:stream_req_body(ReqData, 1024), Boundary
               ),[]),
@@ -45,7 +47,7 @@ process_post(ReqData, Context) ->
             io:format("Caught Exception ~p~n", [{Exception, Reason}]),
             {true,
              prevent_retry(
-               "Caught Exception"++Exception++":"++"Reason",
+               "Caught Exception",
                ReqData
              ),
              Context}
@@ -61,18 +63,22 @@ accumulate_stream_parts({Hunk,Next},Acc) ->
     accumulate_stream_parts(Next(),[Hunk|Acc]).
 
 write_to_disk(Parts, Context) ->
-    case  write_to_disk(Parts, Context, qqpartindex(Parts), qqtotalparts(Parts)-1) of
-        ok -> ok;
-        %% TODO:handle more specific errors here.
-        {error, Error} -> {error,Error}
+    Path = file_path(qquuid(Parts), Context),
+    case filelib:ensure_dir(Path++"/") of
+        ok -> %%io:format("Path ~p~n",[Path]),
+            case  write_to_disk(Parts, Context, qqpartindex(Parts), qqtotalparts(Parts)-1) of
+                ok -> ok;
+                %% TODO:handle more specific errors here.
+                {error, Error} -> {error,Error}
+            end;
+        {error,Error} -> {error,Error}
     end.
 write_to_disk(Parts, Context, Last, Last) ->
     case write_to_disk(Parts, Context, Last, Last+1) of
         ok ->
-            Root = Context#context.outdir,
-            Filename = filename:join(Root, qquuid(Parts), qqfilename(Parts)),
-            Files = find_all_files(Filename++"_*"),
-            case write_combined_parts(Filename, Files) of
+            Path = file_path(qquuid(Parts), Context),
+            Filename = filename:join(Path, qqfilename(Parts)),
+            case write_combined_parts(Filename) of
                 ok -> case check_file_size(
                              filelib:file_size(Filename),
                              qqtotalfilesize(Parts)) of
@@ -84,8 +90,9 @@ write_to_disk(Parts, Context, Last, Last) ->
         {error,Error} -> {error,Error}
     end;
 write_to_disk(Parts, Context, Index, _TotalIndex) ->
-    Root = Context#context.outdir,
-    Filename = filename:join(Root, qquuid(Parts),qqfilename(Parts) ++"_"++Index),
+    Path = file_path(qquuid(Parts), Context),
+    Filename = filename:join(Path, qqfilename(Parts)++"_"++integer_to_list(Index)),
+    %%io:format("Filename ~p~n",[Filename]),
     Bytes = qqfile(Parts),
     case file:write_file(Filename, Bytes) of
         ok -> ok; %%TODO check filesize
@@ -95,25 +102,28 @@ write_to_disk(Parts, Context, Index, _TotalIndex) ->
 
 %%write parts to one file
 %%returns ok | {error, Reason}
-write_combined_parts(Filename, FileParts) when is_list(Filename) ->
+write_combined_parts(Filename) when is_list(Filename) ->
+    Files = find_all_files(Filename++"_*"),
+    %%io:format("Com files ~p~n",[Files]),
     case file:open(Filename, [append]) of
         {ok, Handle} ->
-            case write_combined_parts(Handle, FileParts) of
-                ok -> delete_files(FileParts),
+            case write_combined_parts(Handle, Files) of
+                ok -> delete_files(Files),
                       ok;
                 {error, Reason} ->
                            delete_files([Filename]),
                            {error, Reason}
             end;
         {error, Reason} -> {error, Reason}
-    end;
+    end.
 write_combined_parts(Handle,[]) ->
     file:close(Handle);
-write_combined_parts(Handle,[H|T]) ->
+write_combined_parts(Handle, [H|T]) ->
+    %%io:format("Head in com ~p~n",[H]),
     case file:read_file(H) of
         {ok, Binary} ->
             case file:write(Handle, Binary) of
-                ok -> write_combined_parts(Handle,[T]);
+                ok -> write_combined_parts(Handle, T);
                 {error, Reason} -> {error, Reason}
             end;
         {error, Reason} -> {error, Reason}
@@ -162,15 +172,14 @@ failure(Msg, ReqData) ->
 build_response(Status, ReqData)->
     wrq:set_resp_header(
       "Content-type", "text/plain",
-      response_body(Status),
-      ReqData
+      response_body(Status, ReqData)
     ).
 
-response_body(Status) ->
+response_body(Status, ReqData) ->
     wrq:set_resp_body(
       mochijson:encode(
-        {struct, [Status]}
-      )
+        {struct, Status}
+      ), ReqData
     ).
 
 binary_to_int(N) ->
@@ -190,7 +199,7 @@ delete_files([H|T]) ->
         {error, Reason} -> {error, Reason}
     end.
 
-file_path(_Context, []) ->
+file_path([], _Context) ->
     false;
 file_path(Name, Context) ->
     RelName = case hd(Name) of
