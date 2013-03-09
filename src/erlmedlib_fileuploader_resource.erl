@@ -2,6 +2,7 @@
 
 -export([init/1,
          allowed_methods/2,
+         delete_resource/2,
          process_post/2]).
 
 -include_lib("webmachine/include/webmachine.hrl").
@@ -10,21 +11,46 @@
 
 init([OutputDir]) -> {ok, #context{outdir=OutputDir}}.
 
-allowed_methods(ReqData, Context) ->{['POST'], ReqData, Context}.
+allowed_methods(ReqData, Context) ->{['POST', 'DELETE'], ReqData, Context}.
+
+delete_resource(ReqData, Context) ->
+    Dirname = file_path(wrq:disp_path(ReqData), Context),
+    Files = find_all_files(Dirname++"/*"),
+    case  delete_files(Files) of
+        ok -> case file:del_dir(Dirname) of
+                  ok -> {true, ReqData, Context};
+                  _ -> {false, ReqData, Context}
+              end;
+        _ -> {false, ReqData, Context}
+    end.
 
 process_post(ReqData, Context) ->
-    Boundary = webmachine_multipart:find_boundary(ReqData),
-    io:format("Boundary ~p~n",[Boundary]),
-    %% TODO:handle error from here:
-    Parts = accumulate_stream_parts(webmachine_multipart:stream_parts(
+    try
+        Boundary = webmachine_multipart:find_boundary(ReqData),
+        io:format("Boundary ~p~n",[Boundary]),
+        Parts = accumulate_stream_parts(webmachine_multipart:stream_parts(
                 wrq:stream_req_body(ReqData, 1024), Boundary
               ),[]),
-    io:format("Parts ~p~n", [Parts]),
-    case write_to_disk(Parts, Context) of
-        ok -> {true, success(ReqData), Context};
-        {error, Msg} -> {true, failure(Msg, ReqData), Context};
-        {prevent_retry, Msg} -> {true, prevent_retry(Msg, ReqData), Context};
-        {reset, Msg} -> {true, reset(Msg, ReqData), Context}
+        %%io:format("Parts ~p~n", [Parts]),
+        case write_to_disk(Parts, Context) of
+            ok -> {true, success(ReqData), Context};
+            {error, Msg} -> {true, failure(Msg, ReqData), Context};
+            {prevent_retry, Msg} -> {true, prevent_retry(Msg, ReqData), Context};
+            {reset, Msg} -> {true, reset(Msg, ReqData), Context}
+        end
+    of
+        Ret -> Ret
+    catch
+        Exception:Reason ->
+            io:format("Caught Exception ~p~n", [{Exception, Reason}]),
+            {true,
+             prevent_retry(
+               "Caught Exception"++Exception++":"++"Reason",
+               ReqData
+             ),
+             Context}
+    %%after
+        %%Maybe clean out file system?
     end.
 
 accumulate_stream_parts(done_parts, Acc) ->
@@ -35,23 +61,31 @@ accumulate_stream_parts({Hunk,Next},Acc) ->
     accumulate_stream_parts(Next(),[Hunk|Acc]).
 
 write_to_disk(Parts, Context) ->
-    %% TODO handle error here
-    write_to_disk(Parts, Context, qqpartindex(Parts), qqtotalparts(Parts)-1).
+    case  write_to_disk(Parts, Context, qqpartindex(Parts), qqtotalparts(Parts)-1) of
+        ok -> ok;
+        %% TODO:handle more specific errors here.
+        {error, Error} -> {error,Error}
+    end.
 write_to_disk(Parts, Context, Last, Last) ->
     case write_to_disk(Parts, Context, Last, Last+1) of
-        ok ->%%TODO:get all files
+        ok ->
             Root = Context#context.outdir,
-            Filename = Root++"/"++"/"++qquuid(Parts)++"/"++qqfilename(Parts),
-            case write_combined_parts( Filename, Files ) of
-                ok -> ok; %% TODO check file is correct
+            Filename = filename:join(Root, qquuid(Parts), qqfilename(Parts)),
+            Files = find_all_files(Filename++"_*"),
+            case write_combined_parts(Filename, Files) of
+                ok -> case check_file_size(
+                             filelib:file_size(Filename),
+                             qqtotalfilesize(Parts)) of
+                          ok -> ok;
+                          {error, Error} -> {error, Error} %%return error and delete file?
+                      end;
                 {error, Error} -> {error, Error}
             end;
         {error,Error} -> {error,Error}
     end;
 write_to_disk(Parts, Context, Index, _TotalIndex) ->
-    %% TODO construct part filename here
     Root = Context#context.outdir,
-    Filename = Root++"/"++"/"++qquuid(Parts)++"/"++ qqfilename(Parts) ++"_"++Index,
+    Filename = filename:join(Root, qquuid(Parts),qqfilename(Parts) ++"_"++Index),
     Bytes = qqfile(Parts),
     case file:write_file(Filename, Bytes) of
         ok -> ok; %%TODO check filesize
@@ -65,10 +99,11 @@ write_combined_parts(Filename, FileParts) when is_list(Filename) ->
     case file:open(Filename, [append]) of
         {ok, Handle} ->
             case write_combined_parts(Handle, FileParts) of
-                ok -> ok;
+                ok -> delete_files(FileParts),
+                      ok;
                 {error, Reason} ->
-                    {error, Reason},
-                    file:delete(Filename)
+                           delete_files([Filename]),
+                           {error, Reason}
             end;
         {error, Reason} -> {error, Reason}
     end;
@@ -85,18 +120,17 @@ write_combined_parts(Handle,[H|T]) ->
     end.
 
 %%params from body
-%%TODO: String->Int
 qqfilename(Parts) ->
     binary_to_list(get_param("qqfilename", Parts)).
 
 qqtotalparts(Parts) ->
-    binary_to_list(get_param("qqtotalparts", Parts)).
+    binary_to_int(get_param("qqtotalparts", Parts)).
 
 qqtotalfilesize(Parts) ->
-    binary_to_list(get_param("qqtotalfilesize", Parts)).
+    binary_to_int(get_param("qqtotalfilesize", Parts)).
 
 qqpartindex(Parts) ->
-    binary_to_list(get_param("qqpartindex", Parts)).
+    binary_to_int(get_param("qqpartindex", Parts)).
 
 qquuid(Parts) ->
     binary_to_list(get_param("qquuid", Parts)).
@@ -138,3 +172,29 @@ response_body(Status) ->
         {struct, [Status]}
       )
     ).
+
+binary_to_int(N) ->
+    list_to_integer(binary_to_list(N)).
+
+check_file_size(_Same, _Same) -> ok;
+check_file_size(FileSize, Expected) ->
+    {error, "Expected "++Expected++" got "++FileSize}.
+
+find_all_files(Wildcard) ->
+    lists:sort(filelib:wildcard(Wildcard)).
+
+delete_files([]) -> ok;
+delete_files([H|T]) ->
+    case file:delete(H) of
+        ok -> delete_files(T);
+        {error, Reason} -> {error, Reason}
+    end.
+
+file_path(_Context, []) ->
+    false;
+file_path(Name, Context) ->
+    RelName = case hd(Name) of
+        "/" -> tl(Name);
+        _ -> Name
+    end,
+    filename:join([Context#context.outdir, RelName]).
